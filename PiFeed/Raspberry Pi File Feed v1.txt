@@ -1,0 +1,261 @@
+sudo pkill -f file_server.py; cat << 'EOF' > /home/kali/file_server.py
+from flask import Flask, request, redirect, send_from_directory, render_template_string
+import os, json, psutil, time
+
+UPLOAD="/home/kali/uploads"
+META=os.path.join(UPLOAD,"meta.json")
+os.makedirs(UPLOAD,exist_ok=True)
+
+def load():
+    if os.path.exists(META):
+        try: return json.load(open(META))
+        except: return {}
+    return {}
+
+def save(d): json.dump(d,open(META,"w"))
+
+meta=load()
+app=Flask(__name__)
+
+HTML='''
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+:root{
+--bg:#18191a;--card:#242526;--line:#3a3b3c;--text:#e4e6eb;
+--muted:#b0b3b8;--blue:#2d88ff;
+}
+
+*{scrollbar-width:thin;scrollbar-color:#3a3b3c #18191a}
+*::-webkit-scrollbar{width:8px}
+*::-webkit-scrollbar-track{background:#18191a}
+*::-webkit-scrollbar-thumb{background:#3a3b3c;border-radius:6px}
+
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;margin:0;padding-top:92px;padding-bottom:64px}
+
+header{position:fixed;top:0;left:0;width:100%;background:var(--card);border-bottom:1px solid var(--line);z-index:10}
+.header-inner{max-width:700px;margin:auto;padding:10px}
+.title{text-align:center;font-weight:600;font-size:18px;margin-bottom:8px}
+
+.upload-box{display:flex;gap:8px;background:#2a2b2c;padding:8px;border-radius:10px;flex-wrap:wrap}
+.upload-box input{flex:1;min-width:160px;padding:10px;border-radius:6px;border:1px solid var(--line);background:#1c1d1e;color:var(--text)}
+.upload-box button{padding:10px 14px;border:none;border-radius:8px;background:var(--blue);color:#fff;font-weight:500}
+
+.wrap{max-width:700px;margin:auto;padding:12px}
+.post{background:var(--card);border-radius:10px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.6)}
+.post h4{margin:0;padding:12px;border-bottom:1px solid var(--line);font-size:15px;font-weight:500}
+.post-body{padding:12px}
+img{width:100%;border-radius:8px}
+pre{white-space:pre-wrap;font-size:14px;line-height:1.4; word-break:break-word; overflow-wrap:break-word;}
+
+.actions-row{display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+
+button{padding:8px 12px;border:none;border-radius:6px;font-size:13px;color:#fff;background:var(--blue); word-break: normal; overflow-wrap: normal;}
+
+.meta-right{font-size:12px;color:var(--muted);white-space:nowrap}
+
+.comment-row{display:flex;align-items:center;gap:6px;font-size:13px;margin-top:6px;}
+.comment-row span{word-break:break-word; overflow-wrap:break-word;}
+.comment-row a{color:var(--blue);text-decoration:none;font-size:12px; word-break: normal; overflow-wrap: normal;}
+
+.comment-box{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.comment-box input{flex:1;min-width:160px;padding:8px;border-radius:6px;border:1px solid var(--line);background:#1c1d1e;color:var(--text)}
+
+footer{position:fixed;bottom:0;left:0;width:100%;background:var(--card);border-top:1px solid var(--line);padding:8px;font-size:11px;color:var(--muted);text-align:center}
+
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:50;align-items:center;justify-content:center}
+.modal-box{background:#242526;width:92%;max-width:460px;border-radius:14px;padding:18px;box-shadow:0 0 40px rgba(0,0,0,.9);}
+.modal-box h3{margin:0 0 12px 0;font-size:16px}
+.modal-box input,.modal-box textarea{width:100%;padding:10px;margin-bottom:10px;border-radius:8px;border:1px solid var(--line);background:#1c1d1e;color:var(--text);box-sizing:border-box}
+.modal-box textarea{min-height:260px;resize:vertical;overflow-y:auto; word-break:break-word; overflow-wrap:break-word;}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px}
+.modal-actions button{background:var(--blue);color:#fff; word-break: normal; overflow-wrap: normal;}
+</style>
+
+<script>
+function confirmDelete(url){ if(confirm("Delete this file?")) window.location=url; }
+function confirmComment(url){ if(confirm("Delete this comment?")) window.location=url; }
+function renameFile(oldName){
+  let base=oldName.substring(0,oldName.lastIndexOf('.'))||oldName;
+  let ext=oldName.includes('.')?oldName.substring(oldName.lastIndexOf('.')):"";
+  let n=prompt("Rename file:",base);
+  if(!n)return;
+  window.location="/rename/"+encodeURIComponent(oldName)+"/"+encodeURIComponent(n+ext);
+}
+function openCreate(){document.getElementById("createModal").style.display="flex"}
+function closeCreate(){document.getElementById("createModal").style.display="none"}
+</script>
+</head>
+<body>
+<header>
+<div class="header-inner">
+<div class="title">Raspberry Pi File Feed</div>
+<form method=post enctype=multipart/form-data class="upload-box">
+<input type=file name=files multiple required>
+<button>Upload</button>
+<button type="button" onclick="openCreate()">Create</button>
+</form>
+</div>
+</header>
+
+<div class=wrap>
+{% for f in files %}
+<div class=post>
+<h4>{{ fname(f) }}</h4>
+<div class=post-body>
+
+{% if f.endswith(('jpg','jpeg','png','gif','webp')) %}
+<img src="/uploads/{{f}}">
+{% else %}
+<pre>{{read(f)}}</pre>
+{% endif %}
+
+<div class="actions-row">
+<div class="actions">
+<form method=post action="/like/{{f}}">
+<button>Like ({{meta[f]['likes']}})</button>
+</form>
+<a href="/uploads/{{f}}" target="_blank"><button>Download</button></a>
+<button onclick="renameFile('{{f}}')">Rename</button>
+<button onclick="confirmDelete('/delete/{{f}}')">Delete</button>
+</div>
+<div class="meta-right">
+{{ ftype(f) }} · {{ sizes[f] }} · {{ ftime(meta[f].get('uploaded')) }}
+</div>
+</div>
+
+{% for i,c in enumerate(meta[f]['comments']) %}
+<div class="comment-row">
+<a href="javascript:void(0)" onclick="confirmComment('/delcomment/{{f}}/{{i}}')">Delete</a>
+<span>{{c}}</span>
+</div>
+{% endfor %}
+
+<form class=comment-box method=post action="/comment/{{f}}">
+<input name=comment placeholder="Write a comment…" required>
+<button>Post</button>
+</form>
+</div>
+</div>
+{% endfor %}
+</div>
+
+<div class="modal" id="createModal">
+<div class="modal-box">
+<h3>Create text file</h3>
+<form method="post" action="/create">
+<input name="name" placeholder="Filename (without .txt)" required>
+<textarea name="content" placeholder="File content..." required></textarea>
+<div class="modal-actions">
+<button type="button" onclick="closeCreate()">Cancel</button>
+<button>Create</button>
+</div>
+</form>
+</div>
+</div>
+
+<footer>
+CPU {{cpu}}% | RAM {{ram}}% | Disk {{disk}} | Temp {{temp}}°C | Uptime {{uptime}}
+</footer>
+</body>
+</html>
+'''
+
+# --- Python backend unchanged ---
+def read(f):
+    try: return open(os.path.join(UPLOAD,f)).read()
+    except: return ""
+
+def fsize(p):
+    s=os.path.getsize(p)
+    return f"{round(s/1024,1)} KB" if s<1024*1024 else f"{round(s/1024/1024,1)} MB"
+
+def ftime(ts):
+    if not ts: return "unknown"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+def fname(f): return os.path.splitext(f)[0]
+def ftype(f): return os.path.splitext(f)[1][1:].upper() or "FILE"
+
+def stats():
+    cpu=psutil.cpu_percent()
+    ram=psutil.virtual_memory().percent
+    du=psutil.disk_usage('/')
+    disk=f"{round(du.used/1e9,1)}/{round(du.total/1e9,1)} GB"
+    try: temp=round(psutil.sensors_temperatures()['cpu_thermal'][0].current,1)
+    except: temp=0
+    uptime=time.strftime('%H:%M:%S',time.gmtime(time.time()-psutil.boot_time()))
+    return cpu,ram,disk,temp,uptime
+
+@app.route("/",methods=["GET","POST"])
+def home():
+    if request.method=="POST":
+        for f in request.files.getlist("files"):
+            if f and f.filename:
+                f.save(os.path.join(UPLOAD,f.filename))
+                meta.setdefault(f.filename,{"likes":0,"comments":[],"uploaded":time.time()})
+        save(meta)
+
+    files=sorted([x for x in os.listdir(UPLOAD) if x!="meta.json"],
+        key=lambda x:os.path.getmtime(os.path.join(UPLOAD,x)),reverse=True)
+
+    sizes={f:fsize(os.path.join(UPLOAD,f)) for f in files}
+    for f in files:
+        meta.setdefault(f,{"likes":0,"comments":[]})
+        meta[f].setdefault("uploaded",os.path.getmtime(os.path.join(UPLOAD,f)))
+    save(meta)
+
+    cpu,ram,disk,temp,uptime=stats()
+    return render_template_string(
+        HTML,files=files,meta=meta,read=read,enumerate=enumerate,
+        cpu=cpu,ram=ram,disk=disk,temp=temp,uptime=uptime,
+        sizes=sizes,ftime=ftime,fname=fname,ftype=ftype
+    )
+
+@app.route("/create",methods=["POST"])
+def create():
+    name=request.form["name"].strip()
+    content=request.form["content"]
+    if name:
+        fname=name+".txt"
+        with open(os.path.join(UPLOAD,fname),"w") as f:
+            f.write(content)
+        meta.setdefault(fname,{"likes":0,"comments":[],"uploaded":time.time()})
+        save(meta)
+    return redirect("/")
+
+@app.route("/rename/<old>/<new>")
+def rename(old,new):
+    oldp=os.path.join(UPLOAD,old)
+    newp=os.path.join(UPLOAD,new)
+    if os.path.exists(oldp) and not os.path.exists(newp):
+        os.rename(oldp,newp)
+        meta[new]=meta.pop(old)
+        save(meta)
+    return redirect("/")
+
+@app.route("/uploads/<f>")
+def up(f): return send_from_directory(UPLOAD,f)
+
+@app.route("/delete/<f>")
+def d(f):
+    os.remove(os.path.join(UPLOAD,f))
+    meta.pop(f,None); save(meta)
+    return redirect("/")
+
+@app.route("/like/<f>",methods=["POST"])
+def l(f): meta[f]["likes"]+=1; save(meta); return redirect("/")
+
+@app.route("/comment/<f>",methods=["POST"])
+def c(f): meta[f]["comments"].append(request.form["comment"]); save(meta); return redirect("/")
+
+@app.route("/delcomment/<f>/<int:i>")
+def dc(f,i): meta[f]["comments"].pop(i); save(meta); return redirect("/")
+
+app.run(host="0.0.0.0",port=80)
+EOF
+sudo systemctl restart pi-file-feed
